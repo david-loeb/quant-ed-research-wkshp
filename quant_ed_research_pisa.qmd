@@ -1,0 +1,206 @@
+---
+title: "What is Quantitative Education Research? Example Using PISA"
+format: html
+---
+
+This document gives an overview of a full process for conducting descriptive quantitative education analyses using a large survey. We'll use the Program for International Student Assessment (PISA), the most commonly used international K-12 education survey.
+
+```{r}
+#| label: setup
+pacman::p_load(dplyr, ggplot2, fixest, tidyr, rlang, data.table, stringr, broom)
+```
+
+# Data Setup
+
+## Download 
+
+The first step is to download the data from the [PISA website](https://www.oecd.org/en/about/programmes/pisa.html).
+
+## Convert to more efficient format
+
+The data is provided in two formats: SAS (.sas7bdat) and SPSS (.sav). We need to use the haven package to load data in these formats. I downloaded the data in SAS format, so we use the `haven::read_sas()` function. Note: the dataset is huge so I deleted it after converting; below is just an example to show you how the code looks.
+
+```{r}
+#| eval: false
+df <- read_sas('cy07_msu_stu_qqq.sas7bdat')
+```
+
+Because the datset is so large, I always convert to a more efficient data type. There's a format called RDS that is specialized for R, so it's very efficient, i.e. the file size is smaller and loads much faster. (Note: my favorite format is .parquet, but that requires additional package setup, so we will keep it simpler for now.)
+
+```{r}
+#| eval: false
+saveRDS(df, 'pisa_student_data.rds')
+```
+
+You just need to run the above code one time, and then you can load your data as an RDS file every time you work with it.
+
+## Load & clean data
+
+```{r}
+df <- readRDS('pisa_student_data.rds') |>  # load in the RDS dataset file
+  janitor::clean_names() |>  # make all columns lowercase (easier to type)
+  haven::zap_labels()  # remove SAS labels
+```
+
+## Create column with full country names
+
+I like to add a column in the dataset that has the full country name, so we don't have to look up what countries corresponds to what codes in the codebook. I copied the "CNT" variable codes & labels from the codebook into an Excel file, and I use that below to add a new column with full country names to our dataset.
+
+I use a function called `match()` to achieve this, which is a bit complicated. But we can get the same result using a `left_join()`, so I've included that code below as well.
+
+```{r}
+# Load file with CNT variable & corresponding full country names
+countries <- readxl::read_xlsx("PISA_variables_of_interest.xlsx", sheet = 2)
+
+# Create col in our PISA dataset with full country name: match() approach
+df$country <- countries$Country[match(df$cnt, countries$CNT)]
+
+# Create full country name col: left_join() approach
+df <- left_join(df, countries, by = c('cnt' = 'CNT'))
+
+rm(countries)  # we dont need the countries dataset anymore so we can delete it
+```
+
+# Simple Descriptive Analysis Example
+
+## Differences in means by country
+
+We need to use the `weighted.mean()` function so that we can apply the survey weights when we compute our means for each country. Because of the way that this function works, we cant just add the `na.rm = TRUE` argument to remove `NA` values like we can in the regular `mean()` function. Instead, we have to subset the variables using the bracket `[]` notation, essentially telling R to skip rows that have `NA` values of our variable of interest. We have to tell it to skipthese rows for the main variable of interest and the weight variable.
+
+```{r}
+# Compute means of variables of interest for each country
+country_avg <- df |> 
+  group_by(country) |> 
+  summarise(
+    time_in_ece = weighted.mean(
+      durecec[!is.na(durecec)], w_fstuwt[!is.na(durecec)]  # <- NA removal notation
+    ),
+    teacher_support = weighted.mean(
+      teachsup[!is.na(teachsup)], w_fstuwt[!is.na(teachsup)]
+    ),
+    parent_emotional_support = weighted.mean(
+      emosupp[!is.na(emosupp)], w_fstuwt[!is.na(emosupp)]
+    ),
+    competetive = weighted.mean(
+      compete[!is.na(compete)], w_fstuwt[!is.na(compete)]
+    ),
+    well_being = weighted.mean(
+      swbp[!is.na(swbp)], w_fstuwt[!is.na(swbp)]
+    ),
+    life_meaning = weighted.mean(
+      eudmo[!is.na(eudmo)], w_fstuwt[!is.na(eudmo)]
+    ),
+    body_image = weighted.mean(
+      bodyima[!is.na(bodyima)], w_fstuwt[!is.na(bodyima)]
+    ),
+    global_issue_awareness = weighted.mean(
+      gcaware[!is.na(gcaware)], w_fstuwt[!is.na(gcaware)]
+    ),
+    immigrant_attitude = weighted.mean(
+      attimm[!is.na(attimm)], w_fstuwt[!is.na(attimm)]
+    ),
+    immigrant_attitude_parent = weighted.mean(
+      attimmp[!is.na(attimmp)], w_fstuwt[!is.na(attimmp)]
+    ),
+    math = weighted.mean(
+      pv6math[!is.na(pv6math)], w_fstuwt[!is.na(pv6math)]
+    ),
+    reading = weighted.mean(
+      pv6read[!is.na(pv6read)], w_fstuwt[!is.na(pv6read)]
+    ),
+    science = weighted.mean(
+      pv6scie[!is.na(pv6scie)], w_fstuwt[!is.na(pv6scie)]
+    ),
+    global_competency = weighted.mean(
+      pv6glcm[!is.na(pv6glcm)], w_fstuwt[!is.na(pv6glcm)]
+    )
+  )
+```
+
+To visualize these results, the first thing we do is filter out any countries that have `NA` / `NaN` values for the variable we are interested in. This happens because some countries don't ask certain questions in their survey.
+
+Then, we plot the results. Here, I've made a bar chart with the variable of interest on the x-axis and the countries on the y-axis. To get the countries to be arranged in order of highest to lowest values on the plot, we use the `reorder()` function. You can make the order lowest to highest by setting the argument `decreasing = TRUE`.
+
+Finally, we have to use the argument `stat = "identity"` in `geom_bar()` so that the values of the bars are the values from our dataset. (The default for `geom_bar()` is for R to do its own computing of values for the bars.)
+
+```{r}
+# Visualize results
+country_avg |> 
+  filter(!is.na(well_being)) |>  # filter out countries with NA / NaN
+  ggplot(aes(x = well_being, y = reorder(country, well_being))) + 
+  geom_bar(stat = "identity")
+```
+
+You can just switch out the `well_being` variable for another variable to visualize any of the variables you're interested in.
+
+## Differences in relationship between achievement by country
+
+```{r}
+# Get relationship for each country (via linear regression)
+cntry <- unique(df$country)
+subj <- c('pv6math', 'pv6read')
+
+ses_coefs <- expand_grid(cntry, subj) |> 
+  rowwise() |> 
+  mutate(
+    mod = ifelse(
+      all(is.na(df[[subj]][df$country == cntry])), 
+      NA,
+      list2('{cntry}.{subj}' :=
+        lm(
+          as.formula(str_c(subj, '~ escs')),
+          data = filter(df, country == cntry, !is.na(subj)),
+          weights = w_fstuwt
+        )
+      )
+    ),
+    results = list2('{cntry}.{subj}' := tidy(mod))
+  ) |> 
+  unnest(results) |> 
+  select(-mod) |> 
+  filter(term == 'escs')
+
+# Visualize results
+ses_coefs |> 
+  filter(subj == 'pv6math') |> 
+  ggplot(aes(estimate, reorder(cntry, estimate))) + 
+  geom_bar(stat = "identity")
+
+# Visualize as coefficient plots
+ses_coefs |> 
+  filter(subj == 'pv6math') |> 
+  ggplot(aes(estimate, reorder(cntry, estimate))) + 
+  geom_point() +
+  geom_errorbarh(aes(xmin = estimate - `std.error`, xmax = estimate + `std.error`))
+```
+
+# Regression Analysis Example
+
+```{r}
+# Relationship between SES and achievement, comparing US and China
+mod_ses <- feols(
+  pv6math ~ escs * cnt, 
+  filter(df, cnt %in% c('QCI', 'USA')), 
+  vcov = ~cnt,
+  weights = ~w_fstuwt
+)
+summary(mod_ses)
+
+# Relationship btwn supportive reading teachers & reading scores, US and China
+mod_tchr_supp <- feols(
+  pv6read ~ teachsup * cnt + escs, # <- we control for influence of SES
+  filter(df, cnt %in% c('QCI', 'USA')), 
+  vcov = ~cnt,
+  weights = ~w_fstuwt
+)
+summary(mod_tchr_supp)
+
+# Relationship btwn achievement, SES and happiness, US and China
+mod_happy <- feols(
+  swbp ~ pv6read * cnt + escs * cnt,
+  filter(df, cnt %in% c('QCI', 'USA')), 
+  vcov = ~cnt,
+  weights = ~w_fstuwt
+)
+summary(mod_happy)
+```
